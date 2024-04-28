@@ -1,0 +1,12 @@
+1. Initialise structures Q table, transition count, reward sum, pirority queue
+2. Update model based on algo 2 
+    - Transition count += 1 
+    - reward sum += r 
+    - Transition function 
+    - Reward function 
+
+3. Update Q table 
+4. For loop 
+    - Find previous state, Find previous action 
+    - Simulate model
+    - Update Q table based 

@@ -94,25 +94,70 @@ class PrioritizedSweepingAgent:
         self.learning_rate = learning_rate
         self.gamma = gamma
         self.priority_cutoff = priority_cutoff
-        
         self.Q_sa = np.zeros((n_states,n_actions))
-        # TO DO: Initialize count tables, reward sum tables, priority queue
+        self.transition = np.zeros((n_states, n_actions, n_states))
+        self.rewards = np.zeros((n_states, n_actions, n_states))
+        self.queue = PriorityQueue()
+        self.max_queue_size = max_queue_size
         
     def select_action(self, s, epsilon):
         # TO DO: Change this to e-greedy action selection
-        a = np.random.randint(0,self.n_actions) # Replace this with correct action selection
-        return a
+        best_action = np.argmax(self.Q_sa[s])
+        probs = np.zeros(self.n_actions)
+        for idx in range(self.n_actions):
+            if idx == best_action:
+                probs[idx] = 1 - epsilon
+            else:
+                probs[idx] = epsilon/(self.n_actions-1)
+        total_prob = sum(probs)
+        probs /= total_prob
+        a = np.random.choice(self.n_actions,p=probs)
+        return a 
         
     def update(self,s,a,r,done,s_next,n_planning_updates):
         
         # TO DO: Add Prioritized Sweeping code
+         # Update transition counts
+        self.transition[s][a][s_next] += 1
+        # Update reward sum
+        self.rewards[s][a][s_next]+= r
+
+        transition = np.zeros((self.n_states,self.n_actions,self.n_states))
+        for s in range(self.n_states):
+            for a in range(self.n_actions):
+                transitions = np.sum(self.transition[s][a])
+                if transitions > 0:
+                    for s1 in range(self.n_states):
+                        if self.transition[s][a][s1] > 0:
+                            transition[s][a][s1] = self.transition[s][a][s1] / transitions
+        # reward function
+        reward = np.zeros((self.n_states,self.n_actions,self.n_states))
+        for s in range(self.n_states):
+            for a in range(self.n_actions):
+                    for s1 in range(self.n_states):
+                        if self.transition[s][a][s1]>0:
+                            reward[s][a][s1] = self.rewards[s][a][s1] / self.transition[s][a][s1]
+        p_score = np.abs(r + self.gamma * max(self.Q_sa[s_next])-self.Q_sa[s][a])
+
+        if p_score > self.priority_cutoff and self.queue.qsize() < self.max_queue_size:
+            self.queue.put((-p_score,(s,a)))
         
-        # Helper code to work with the queue
-        # Put (s,a) on the queue with priority p (needs a minus since the queue pops the smallest priority first)
-        # self.queue.put((-p,(s,a))) 
-        # Retrieve the top (s,a) from the queue
-        # _,(s,a) = self.queue.get() # get the top (s,a) for the queue
-        pass
+        for _ in range(n_planning_updates):
+            score, pair = self.queue.get()
+            state = pair[0]
+            action = pair[1]
+            new_state = np.random.choice(range(self.n_actions),p=transition[state][action])
+            new_r = reward[state][action][new_state]
+            self.Q_sa[state][action] += self.learning_rate * (new_r + (self.gamma * max(self.Q_sa[new_state])-self.Q_sa[state][action]))
+            for i in range(self.n_states):
+                for act in range(self.n_actions):
+                    for i_i in range(self.n_states):
+                        if i_i == state and self.transition[i][act][i_i] > 0:
+                            r_1 = self.rewards[i][act][i_i]
+                            p_1 = np.abs(r_1 + self.gamma * max(self.Q_sa[state])-self.Q_sa[i][act])
+                            if p_1 > self.priority_cutoff and self.queue.qsize() < self.max_queue_size:
+                                self.queue.put((-p_1,(i,act)))
+
 
     def evaluate(self,eval_env,n_eval_episodes=30, max_episode_length=100):
         returns = []  # list to store the reward per episode
