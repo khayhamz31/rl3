@@ -7,7 +7,7 @@ Bachelor AI, Leiden University, The Netherlands
 By Thomas Moerland
 """
 import numpy as np
-from queue import PriorityQueue
+from queue import PriorityQueue, Empty
 from MBRLEnvironment import WindyGridworld
 
 class DynaAgent:
@@ -98,7 +98,40 @@ class PrioritizedSweepingAgent:
         else:
             a = np.argmax(self.Q_sa[s])
         return a
-        
+
+    def update(self, s, a, r, done, s_next, n_planning_updates):
+        # Update transition and reward sums directly
+        self.transition[s, a, s_next] += 1
+        self.rewards[s, a, s_next] += r
+
+        # Compute priority for the current state-action pair
+        p = abs(r + self.gamma * np.max(self.Q_sa[s_next]) - self.Q_sa[s, a])
+        if p > self.priority_cutoff:
+            self.queue.put((-p, (s, a)))  # Use negative priority for max-heap behavior
+
+        # Perform planning updates
+        for _ in range(n_planning_updates):
+            if self.queue.empty():
+                break
+            _, (s, a) = self.queue.get()
+
+            # Sample from the updated model
+            sampled_states = np.where(self.transition[s, a] > 0)[0]
+            trans_probs = self.transition[s, a, sampled_states] / np.sum(self.transition[s, a])
+            next_state = np.random.choice(sampled_states, p=trans_probs)
+            reward = self.rewards[s, a, next_state] / self.transition[s, a, next_state]
+
+            # Update Q-value
+            self.Q_sa[s, a] += self.learning_rate * (reward + self.gamma * np.max(self.Q_sa[next_state]) - self.Q_sa[s, a])
+
+            # Reevaluate priorities for all preceding state-actions
+            prev_states, prev_actions = np.where(self.transition[:, :, s] > 0)
+            r_prev = self.rewards[prev_states, prev_actions, s] / self.transition[prev_states, prev_actions, s]
+            p_prev = abs(r_prev + self.gamma * np.max(self.Q_sa[s]) - self.Q_sa[prev_states, prev_actions])
+            mask = p_prev > self.priority_cutoff
+            self.queue.put((-p_prev[mask], (prev_states[mask], prev_actions[mask])))
+
+    """
     def update(self,s,a,r,done,s_next,n_planning_updates):
         # update model 
         self.transition[s][a][s_next] += 1 # update transition
@@ -131,6 +164,8 @@ class PrioritizedSweepingAgent:
                             p_1 = np.abs(r_1 + self.gamma * max(self.Q_sa[state])-self.Q_sa[i][act])
                             if p_1 > self.priority_cutoff and self.queue.qsize() < self.max_queue_size:
                                 self.queue.put((-p_1,(i,act)))
+
+    """
 
     def evaluate(self, eval_env, n_eval_episodes=30, max_episode_length=100):
         returns = []  # list to store the reward per episode
@@ -198,7 +233,7 @@ def test():
     
     # Prepare for running
     s = env.reset()  
-    continuous_mode = False
+    continuous_mode = True
     
     for t in range(n_timesteps):            
         # Select action, transition, update policy
