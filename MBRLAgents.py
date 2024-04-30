@@ -7,7 +7,7 @@ Bachelor AI, Leiden University, The Netherlands
 By Thomas Moerland
 """
 import numpy as np
-from queue import PriorityQueue
+from queue import PriorityQueue, Empty
 from MBRLEnvironment import WindyGridworld
 
 
@@ -32,35 +32,50 @@ class DynaAgent:
         return a
 
     def update(self, s, a, r, done, s_next, n_planning_updates):
-        # update model
-        self.transition[s][a][s_next] += 1  # update transition
-        self.rewards[s][a][s_next] += r  # update reward
-        # update estimate transition
-        count = np.sum(self.transition[s][a])
-        for i in range(self.n_states):
-            self.transition_estimate[s][a][i] = self.transition[s][a][i] / count
-        # update estimate reward
-        self.reward_estimate[s][a][s_next] = self.rewards[s][a][s_next] / self.transition[s][a][s_next]
-        # update Q table
-        if not done:
-            self.Q_sa[s][a] += self.learning_rate * (
-                        r + self.gamma * max(self.Q_sa[s_next]) - self.Q_sa[s][a])  # update q_table
-        else:
-            self.Q_sa[s][a] += self.learning_rate * (r - self.Q_sa[s][a])
-        # for each plan
-        for _ in range(n_planning_updates):
-            visit_count = np.sum(self.transition.sum(axis=2), axis=1)
-            probs = visit_count / np.sum(visit_count)
-            state = np.random.choice(self.n_states, p=probs)
-            action_count = np.sum(self.transition[state], axis=1)
-            a_probs = action_count / np.sum(action_count)
-            action = np.random.choice(self.n_actions, p=a_probs)
+        # Update model counts and rewards
+        self.transition[s, a, s_next] += 1
+        self.rewards[s, a, s_next] += r
 
-            new_state = np.random.choice(self.n_states, p=self.transition_estimate[state][
-                action])  # simulate s,a pair using transition estimate
-            new_r = self.reward_estimate[state][action][new_state]
-            self.Q_sa[state][action] += self.learning_rate * (
-                        new_r + self.gamma * max(self.Q_sa[new_state]) - self.Q_sa[state][action])
+        # Track predecessors for each state
+        self.predecessors[s_next].add((s, a))
+
+        # Calculate priority
+        max_q_next = np.max(self.Q_sa[s_next])
+        priority = np.abs(r + self.gamma * max_q_next - self.Q_sa[s, a])
+
+        # Check if priority is above threshold before inserting into priority queue
+        if priority > self.priority_cutoff:
+            self.queue.put((-priority, (s, a)))  # Negative priority because PriorityQueue is a min-heap
+
+        # Planning step
+        for _ in range(n_planning_updates):
+            if self.queue.empty():
+                break
+
+            # Get the highest priority state-action pair
+            _, (s_pri, a_pri) = self.queue.get()
+
+            # Find the most likely next state and reward based on model counts and rewards
+            sampled_states = np.where(self.transition[s_pri, a_pri] > 0)[0]
+            transition_prob = self.transition[s_pri, a_pri, sampled_states] / np.sum(self.transition[s_pri, a_pri])
+            next_state = np.random.choice(sampled_states, p=transition_prob)
+            reward = self.rewards[s_pri, a_pri, next_state] / self.transition[s_pri, a_pri, next_state]
+
+            # Update Q-value for the selected state-action pair
+            self.Q_sa[s_pri, a_pri] += self.learning_rate * (
+                reward + self.gamma * np.max(self.Q_sa[next_state]) - self.Q_sa[s_pri, a_pri]
+            )
+
+            # Update priorities for all predecessors of the selected state
+            for sp, ap in self.predecessors[s_pri]:
+                if np.sum(self.transition[sp, ap]) > 0:
+                    reward_pred = self.rewards[sp, ap, s_pri] / np.sum(self.transition[sp, ap])
+                    max_q_pred = np.max(self.Q_sa[s_pri])
+                    priority_pred = np.abs(reward_pred + self.gamma * max_q_pred - self.Q_sa[sp, ap])
+
+                    # Check if priority is above threshold before inserting into priority queue
+                    if priority_pred > self.priority_cutoff:
+                        self.queue.put((-priority_pred, (sp, ap)))
 
     def evaluate(self, eval_env, n_eval_episodes=30, max_episode_length=100):
         returns = []  # list to store the reward per episode
@@ -104,38 +119,39 @@ class PrioritizedSweepingAgent:
         return a
 
     def update(self, s, a, r, done, s_next, n_planning_updates):
-        # update model
-        self.transition[s][a][s_next] += 1  # update transition
-        self.rewards[s][a][s_next] += r  # update reward
-        # update estimate transition
-        count = np.sum(self.transition[s][a])
-        for i in range(self.n_states):
-            self.transition_estimate[s][a][i] = self.transition[s][a][i] / count
-        # update estimate reward
-        self.reward_estimate[s][a][s_next] = self.rewards[s][a][s_next] / self.transition[s][a][s_next]
 
-        p_score = abs(r + self.gamma * np.max(self.Q_sa[s_next]) - self.Q_sa[s][a])  # compute priority
+        # TO DO: Add Prioritized Sweeping code
+        self.trans_counts[s, a, s_next] += 1
+        self.reward_sum[s, a, s_next] += r
+        # Helper code to work with the queue
+        # Put (s,a) on the queue with priority p (needs a minus since the queue pops the smallest priority first)
+        p = abs(r + self.gamma * np.max(self.Q_sa[s_next]) - self.Q_sa[s, a])
+        if p > self.priority_cutoff:
+            self.queue.put((-p, (s, a)))
 
-        if p_score > self.priority_cutoff and self.queue.qsize() < self.max_queue_size:
-            self.queue.put((-p_score, (s, a)))  # added to priority queue if met
         for _ in range(n_planning_updates):
-            if self.queue.empty:
+            # Retrieve the top (s,a) from the queue
+            try:
+                _, (s, a) = self.queue.get(False)  # get the top (s,a) for the queue
+            except Empty:
                 break
-            score, pair = self.queue.get()
-            state = pair[0]
-            action = pair[1]
-            new_state = np.random.choice(self.n_states, p=self.transition_estimate[state][action])
-            new_r = self.reward_estimate[state][action][new_state]
-            self.Q_sa[state][action] += self.learning_rate * (
-                        new_r + (self.gamma * max(self.Q_sa[new_state]) - self.Q_sa[state][action]))
-            for i in range(self.n_states):
-                for act in range(self.n_actions):
-                    for i_i in range(self.n_states):
-                        if i_i == state and self.transition[i][act][i_i] > 0:
-                            r_1 = self.rewards[i][act][i_i]
-                            p_1 = np.abs(r_1 + self.gamma * max(self.Q_sa[state]) - self.Q_sa[i][act])
-                            if p_1 > self.priority_cutoff and self.queue.qsize() < self.max_queue_size:
-                                self.queue.put((-p_1, (i, act)))
+
+            sampled_states = np.where(self.trans_counts[s, a] > 0)[0]
+            trans_func = (self.trans_counts[s, a, sampled_states] / np.sum(self.trans_counts[s, a]))
+
+            next_state = np.random.choice(sampled_states, p=trans_func)
+            reward = self.reward_sum[s, a, next_state] / self.trans_counts[s, a, next_state]
+
+            self.Q_sa[s, a] += (self.learning_rate *
+                                (reward + self.gamma * np.max(self.Q_sa[next_state]) - self.Q_sa[s, a]))
+
+            prev_states, prev_actions = np.where(self.trans_counts[:, :, s] > 0)
+            for i in range(len(prev_states)):
+                s_b, a_b = prev_states[i], prev_actions[i]
+                r_b = self.reward_sum[s_b, a_b, s] / self.trans_counts[s_b, a_b, s]
+                p = abs(r_b + self.gamma * np.max(self.Q_sa[s]) - self.Q_sa[s_b, a_b])
+                if p > self.priority_cutoff:
+                    self.queue.put((-p, (s_b, a_b)))
 
     def evaluate(self, eval_env, n_eval_episodes=30, max_episode_length=100):
         returns = []  # list to store the reward per episode
